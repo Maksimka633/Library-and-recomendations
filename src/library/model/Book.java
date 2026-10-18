@@ -4,7 +4,7 @@ import java.util.Objects;
 
 /**
  * Книга в каталоге библиотеки.
- * <p>
+
  * Объект неизменяемый. Две книги считаются одинаковыми, если совпадает id.
  */
 public final class Book {
@@ -16,8 +16,8 @@ public final class Book {
     private final int year;
 
     /**
-     * @throws IllegalArgumentException если id не положительный, год вне диапазона
-     *                                  или текстовое поле пустое
+     * throws если id не положительный, год вне диапазона
+     * или текстовое поле пустое
      */
     public Book(int id, String title, String author, String genre, int year) {
         if (id <= 0) {
