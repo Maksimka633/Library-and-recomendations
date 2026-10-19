@@ -1,0 +1,307 @@
+package library.catalog;
+
+import library.model.Book;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+
+/**
+ * Тесты каталога без внешних библиотек.
+ * <p>
+ * Запускать из корня репозитория (тест читает data/books.csv):
+ * {@code java -cp out library.catalog.BookCatalogTest}.
+ * При ошибках процесс завершается с кодом 1.
+ */
+public class BookCatalogTest {
+
+    private static int passed = 0;
+    private static int failed = 0;
+
+    public static void main(String[] args) {
+        // Book
+        run("book: blank title is rejected", BookCatalogTest::bookRejectsBlankTitle);
+        run("book: non-positive id is rejected", BookCatalogTest::bookRejectsBadId);
+        run("book: year in the future is rejected", BookCatalogTest::bookRejectsBadYear);
+        run("book: equality is based on id", BookCatalogTest::bookEqualityById);
+        run("book: fields are trimmed", BookCatalogTest::bookTrimsFields);
+
+        // BookCatalog: хранение
+        run("catalog: duplicate id is rejected", BookCatalogTest::catalogRejectsDuplicateId);
+        run("catalog: findById found and not found", BookCatalogTest::findByIdWorks);
+        run("catalog: getAll is unmodifiable", BookCatalogTest::getAllIsUnmodifiable);
+        run("catalog: genres are unique and sorted", BookCatalogTest::genresAreUniqueAndSorted);
+
+        // BookCatalog: поиск по трём полям
+        run("search: by title, part of word, any case", BookCatalogTest::searchByTitle);
+        run("search: by title, cyrillic any case", BookCatalogTest::searchByTitleCyrillic);
+        run("search: by author, part of name", BookCatalogTest::searchByAuthor);
+        run("search: by genre, exact match only", BookCatalogTest::searchByGenreExact);
+        run("search: genre index finds any case", BookCatalogTest::searchByGenreAnyCase);
+        run("search: several fields are combined with AND", BookCatalogTest::combinedSearch);
+        run("search: year range is inclusive", BookCatalogTest::yearRangeInclusive);
+        run("search: reversed year range is rejected", BookCatalogTest::reversedYearRangeRejected);
+        run("search: empty criteria returns all", BookCatalogTest::emptyCriteriaReturnsAll);
+        run("search: blank text means no condition", BookCatalogTest::blankTextMeansNoCondition);
+        run("search: nothing found gives empty list", BookCatalogTest::nothingFoundGivesEmptyList);
+
+        // Загрузка CSV
+        run("csv: valid line is parsed", BookCatalogTest::csvParsesValidLine);
+        run("csv: wrong field count mentions line number", BookCatalogTest::csvWrongFieldCount);
+        run("csv: non-numeric year mentions line number", BookCatalogTest::csvBadYear);
+        run("csv: file is loaded, header and blank lines skipped", BookCatalogTest::csvLoadsFile);
+        run("csv: bundled data has 200+ books", BookCatalogTest::bundledDataHasEnoughBooks);
+
+        System.out.println();
+        System.out.println("Passed: " + passed + ", failed: " + failed);
+        if (failed > 0) {
+            System.exit(1);
+        }
+    }
+
+    // ---------- Book ----------
+
+    private static void bookRejectsBlankTitle() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new Book(1, "  ", "Author", "Genre", 2000));
+    }
+
+    private static void bookRejectsBadId() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new Book(0, "Title", "Author", "Genre", 2000));
+    }
+
+    private static void bookRejectsBadYear() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new Book(1, "Title", "Author", "Genre", 9999));
+    }
+
+    private static void bookEqualityById() {
+        Book a = new Book(1, "Title A", "Author A", "Genre A", 2000);
+        Book b = new Book(1, "Title B", "Author B", "Genre B", 2001);
+        assertEquals(a, b);
+        assertEquals(a.hashCode(), b.hashCode());
+    }
+
+    private static void bookTrimsFields() {
+        Book book = new Book(1, "  Title ", " Author", "Genre  ", 2000);
+        assertEquals("Title", book.getTitle());
+        assertEquals("Author", book.getAuthor());
+        assertEquals("Genre", book.getGenre());
+    }
+
+    // ---------- Хранение ----------
+
+    private static void catalogRejectsDuplicateId() {
+        BookCatalog catalog = sampleCatalog();
+        assertThrows(IllegalArgumentException.class,
+                () -> catalog.add(new Book(1, "Another", "Someone", "Drama", 1999)));
+        assertEquals(6, catalog.size());
+    }
+
+    private static void findByIdWorks() {
+        BookCatalog catalog = sampleCatalog();
+        assertEquals("Dune", catalog.findById(1).orElseThrow().getTitle());
+        assertTrue(catalog.findById(999).isEmpty());
+    }
+
+    private static void getAllIsUnmodifiable() {
+        BookCatalog catalog = sampleCatalog();
+        assertThrows(UnsupportedOperationException.class,
+                () -> catalog.getAll().add(new Book(100, "X", "Y", "Z", 2000)));
+    }
+
+    private static void genresAreUniqueAndSorted() {
+        BookCatalog catalog = sampleCatalog();
+        assertEquals(List.of("Detective", "Fantasy", "Science Fiction"),
+                List.copyOf(catalog.getGenres()));
+    }
+
+    // ---------- Поиск ----------
+
+    private static void searchByTitle() {
+        BookCatalog catalog = sampleCatalog();
+        assertIds(catalog.searchByTitle("the"), 2, 3, 4);       // «The Hobbit», «The Silent Witness», «Another Theory»
+        assertIds(catalog.searchByTitle("DUNE"), 1, 5);         // «Dune» и «Children of Dune»
+    }
+
+    private static void searchByTitleCyrillic() {
+        BookCatalog catalog = new BookCatalog();
+        catalog.add(new Book(1, "Война и мир", "Лев Автор", "Роман", 1869));
+        assertIds(catalog.searchByTitle("ВОЙНА"), 1);
+        assertIds(catalog.searchByTitle("мир"), 1);
+    }
+
+    private static void searchByAuthor() {
+        BookCatalog catalog = sampleCatalog();
+        assertIds(catalog.searchByAuthor("herbert"), 1, 5);
+        assertIds(catalog.searchByAuthor("Tolkien"), 2);
+    }
+
+    private static void searchByGenreExact() {
+        BookCatalog catalog = sampleCatalog();
+        assertIds(catalog.searchByGenre("Fantasy"), 2, 6);
+        // Часть названия жанра не считается совпадением
+        assertIds(catalog.searchByGenre("Fan"));
+    }
+
+    private static void searchByGenreAnyCase() {
+        BookCatalog catalog = sampleCatalog();
+        assertIds(catalog.searchByGenre("science FICTION"), 1, 5);
+    }
+
+    private static void combinedSearch() {
+        BookCatalog catalog = sampleCatalog();
+        SearchCriteria criteria = SearchCriteria.builder()
+                .author("herbert")
+                .genre("Science Fiction")
+                .title("children")
+                .build();
+        assertIds(catalog.search(criteria), 5);
+    }
+
+    private static void yearRangeInclusive() {
+        BookCatalog catalog = sampleCatalog();
+        SearchCriteria criteria = SearchCriteria.builder().yearFrom(1937).yearTo(1965).build();
+        assertIds(catalog.search(criteria), 1, 2);               // 1965 и 1937 входят в диапазон
+    }
+
+    private static void reversedYearRangeRejected() {
+        assertThrows(IllegalArgumentException.class,
+                () -> SearchCriteria.builder().yearFrom(2000).yearTo(1990).build());
+    }
+
+    private static void emptyCriteriaReturnsAll() {
+        BookCatalog catalog = sampleCatalog();
+        SearchCriteria criteria = SearchCriteria.builder().build();
+        assertTrue(criteria.isEmpty());
+        assertEquals(6, catalog.search(criteria).size());
+    }
+
+    private static void blankTextMeansNoCondition() {
+        BookCatalog catalog = sampleCatalog();
+        assertEquals(6, catalog.searchByTitle("   ").size());
+        assertEquals(6, catalog.searchByAuthor(null).size());
+    }
+
+    private static void nothingFoundGivesEmptyList() {
+        BookCatalog catalog = sampleCatalog();
+        assertTrue(catalog.searchByTitle("no such book").isEmpty());
+        assertTrue(catalog.searchByGenre("Poetry").isEmpty());
+    }
+
+    // ---------- CSV ----------
+
+    private static void csvParsesValidLine() {
+        Book book = BookCsvLoader.parseLine("7;Some Title;Some Author;Drama;1999", 8);
+        assertEquals(7, book.getId());
+        assertEquals("Some Title", book.getTitle());
+        assertEquals(1999, book.getYear());
+    }
+
+    private static void csvWrongFieldCount() {
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> BookCsvLoader.parseLine("7;Only;Three", 12));
+        assertTrue(e.getMessage().contains("12"));
+    }
+
+    private static void csvBadYear() {
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> BookCsvLoader.parseLine("7;Title;Author;Drama;abc", 5));
+        assertTrue(e.getMessage().contains("5"));
+    }
+
+    private static void csvLoadsFile() {
+        try {
+            Path file = Files.createTempFile("books", ".csv");
+            try {
+                Files.writeString(file,
+                        "id;title;author;genre;year\n"
+                                + "1;First;Author One;Drama;2001\n"
+                                + "\n"
+                                + "2;Second;Author Two;Comedy;2002\n",
+                        StandardCharsets.UTF_8);
+                List<Book> books = BookCsvLoader.load(file);
+                assertEquals(2, books.size());
+                assertEquals("Second", books.get(1).getTitle());
+            } finally {
+                Files.deleteIfExists(file);
+            }
+        } catch (IOException e) {
+            throw new AssertionError("I/O error in test: " + e);
+        }
+    }
+
+    private static void bundledDataHasEnoughBooks() {
+        try {
+            BookCatalog catalog = new BookCatalog();
+            catalog.addAll(BookCsvLoader.load(Path.of("data/books.csv")));
+            assertTrue("expected 200+ books, found " + catalog.size(), catalog.size() >= 200);
+        } catch (IOException e) {
+            throw new AssertionError("Cannot read data/books.csv (run tests from repo root): " + e);
+        }
+    }
+
+    // ---------- Вспомогательное ----------
+
+    /** Небольшой каталог: id 1..6, жанры Science Fiction / Fantasy / Detective. */
+    private static BookCatalog sampleCatalog() {
+        BookCatalog catalog = new BookCatalog();
+        catalog.add(new Book(1, "Dune", "Frank Herbert", "Science Fiction", 1965));
+        catalog.add(new Book(2, "The Hobbit", "J. R. R. Tolkien", "Fantasy", 1937));
+        catalog.add(new Book(3, "The Silent Witness", "Agatha Example", "Detective", 1985));
+        catalog.add(new Book(4, "Another Theory", "Agatha Example", "Detective", 2010));
+        catalog.add(new Book(5, "Children of Dune", "Frank Herbert", "Science Fiction", 1976));
+        catalog.add(new Book(6, "Dragon Road", "Anna Writer", "Fantasy", 2015));
+        return catalog;
+    }
+
+    private static void run(String name, Runnable test) {
+        try {
+            test.run();
+            passed++;
+            System.out.println("OK    " + name);
+        } catch (AssertionError | RuntimeException e) {
+            failed++;
+            System.out.println("FAIL  " + name + "  ->  " + e);
+        }
+    }
+
+    private static void assertIds(List<Book> books, int... expectedIds) {
+        int[] actual = books.stream().mapToInt(Book::getId).toArray();
+        if (!java.util.Arrays.equals(expectedIds, actual)) {
+            throw new AssertionError("expected ids " + java.util.Arrays.toString(expectedIds)
+                    + " but got " + java.util.Arrays.toString(actual));
+        }
+    }
+
+    private static void assertEquals(Object expected, Object actual) {
+        if (!expected.equals(actual)) {
+            throw new AssertionError("expected <" + expected + "> but was <" + actual + ">");
+        }
+    }
+
+    private static void assertTrue(boolean condition) {
+        assertTrue("condition is false", condition);
+    }
+
+    private static void assertTrue(String message, boolean condition) {
+        if (!condition) {
+            throw new AssertionError(message);
+        }
+    }
+
+    private static <T extends Throwable> T assertThrows(Class<T> type, Runnable action) {
+        try {
+            action.run();
+        } catch (Throwable t) {
+            if (type.isInstance(t)) {
+                return type.cast(t);
+            }
+            throw new AssertionError("expected " + type.getSimpleName() + " but got " + t);
+        }
+        throw new AssertionError("expected " + type.getSimpleName() + " but nothing was thrown");
+    }
+}
